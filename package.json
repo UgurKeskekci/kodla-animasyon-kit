@@ -1,0 +1,11 @@
+{
+  "name": "kodla-animasyon-kit",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Görsel üretim modeli olmadan HTML Canvas ile animasyon video",
+  "type": "module",
+  "engines": { "node": ">=18" },
+  "scripts": { "ornek": "node araclar/render.mjs ornekler/slime-canli/film.html --sure 3 --cikti renders/deneme.mp4" },
+  "dependencies": { "puppeteer-core": "24.43.1" },
+  "license": "MIT"
+}

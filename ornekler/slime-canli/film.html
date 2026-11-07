@@ -1,0 +1,510 @@
+<!doctype html>
+<!--
+Adapted from a cinecode-based Canlı Slime film.
+Copyright (c) 2026 Sarp Yıldız (@sarpstar), MIT.
+Source: https://github.com/sarpstar/cinecode
+License: LICENSE-cinecode (full MIT notice).
+The standalone scene adaptation is MIT; see the repository LICENSE.
+-->
+<html lang="tr">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Canlı Slime, kodla animasyon</title>
+<style>
+html,body { margin:0; background:#221f25; color:#eee; font:13px system-ui,sans-serif; }
+canvas { display:block; margin:auto; max-width:100vw; max-height:94vh; }
+p { margin:8px; text-align:center; }
+</style>
+<canvas id="c"></canvas>
+<p id="hud">Sessiz örnek. Tıklayın: oynat / durdur. Ok tuşları: bir kare.</p>
+<script>
+// One HTML file, no network, assets or generated images.
+const FPS = 24, DURATION = 20, SEED = 7;
+const W = 1080, H = 1920, TAU = Math.PI * 2;
+const TYPE = {}; // System fonts keep the example self-contained.
+const canvas = document.getElementById('c');
+canvas.width = W; canvas.height = H;
+const g = canvas.getContext('2d', { alpha: false });
+const S = { W, H, u: Math.min(W, H) };
+const clamp = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x));
+const lerp = (a, b, k) => a + (b - a) * k;
+const EASE = { out: k => 1 - (1 - k) ** 3, inOut: k => k < 0.5 ? 4 * k ** 3 : 1 - (-2 * k + 2) ** 3 / 2 };
+function setType(g, _type, _role, px, o = {}) {
+  g.font = `${o.weight ?? 400} ${px}px Arial, sans-serif`;
+  g.letterSpacing = `${(px * 0.005).toFixed(2)}px`;
+  return g;
+}
+function rng(salt) {                         // seeded PRNG (mulberry32); call rng(salt) inside draw for a fresh, fixed stream
+  let a = (SEED * 2654435761 + salt * 974711) >>> 0;
+  return () => { a = (a + 0x6D2B79F5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+}
+
+// ---- small tools
+const kf = (t, keys) => {   // keyframes [[time, value or [x, y]], ...], eased between, held outside
+  if (t <= keys[0][0]) return keys[0][1];
+  for (let i = 1; i < keys.length; i++) if (t < keys[i][0]) {
+    const [t0, a] = keys[i - 1], [t1, b] = keys[i], k = EASE.inOut((t - t0) / (t1 - t0));
+    return Array.isArray(a) ? a.map((v, j) => lerp(v, b[j], k)) : lerp(a, b, k);
+  }
+  return keys[keys.length - 1][1];
+};
+const yay = (o) => o;   // marks a plain data object
+function ik(sx, sy, hx, hy, L1, L2, dis) {   // two-bone arm: the elbow, bent away from the body (dis = +1 right, -1 left)
+  const dx = hx - sx, dy = hy - sy, d = Math.min(Math.hypot(dx, dy), L1 + L2 - 1e-3), a = Math.atan2(dy, dx);
+  const b = Math.acos(clamp((L1 * L1 + d * d - L2 * L2) / (2 * L1 * d), -1, 1));
+  return [sx + Math.cos(a - dis * b) * L1, sy + Math.sin(a - dis * b) * L1];
+}
+function kalp(g, x, y, s) { g.beginPath(); g.moveTo(x, y + s * 0.3); g.bezierCurveTo(x - s * 0.9, y - s * 0.35, x - s * 0.35, y - s * 0.95, x, y - s * 0.4);
+  g.bezierCurveTo(x + s * 0.35, y - s * 0.95, x + s * 0.9, y - s * 0.35, x, y + s * 0.3); g.closePath(); }
+
+// ---- the room: a warm white textured wall, cyan LED strings hanging, softly out of focus
+function oda(g, S, t) {
+  const W = S.W, H = S.H;
+  const gr = g.createLinearGradient(0, 0, 0, H * 0.6); gr.addColorStop(0, '#b9ab9b'); gr.addColorStop(0.5, '#cbbfb0'); gr.addColorStop(1, '#b3a594');
+  g.fillStyle = gr; g.fillRect(0, 0, W, H * 0.62);
+  const r = rng(31);
+  g.save(); g.filter = `blur(${(W * 0.006).toFixed(1)}px)`;
+  for (let i = 0; i < 60; i++) {   // the textured plaster: soft wavy lumps
+    const x = r() * W, y = r() * H * 0.58, w = W * (0.08 + r() * 0.14), h = H * (0.01 + r() * 0.02);
+    g.fillStyle = r() < 0.5 ? 'rgba(255,255,255,0.35)' : 'rgba(150,135,120,0.12)'; g.beginPath(); g.ellipse(x, y, w, h, r() * 0.6 - 0.3, 0, TAU); g.fill();
+  }
+  for (const [lx, salt] of [[0.08, 1], [0.21, 2], [0.36, 3], [0.62, 4], [0.79, 5], [0.93, 6]]) {   // the LED strings
+    const x0 = W * lx, rr = rng(40 + salt);
+    g.strokeStyle = 'rgba(90,120,120,0.35)'; g.lineWidth = Math.max(1, W * 0.0015); g.beginPath(); g.moveTo(x0, 0);
+    for (let y = 0; y <= H * 0.56; y += H * 0.02) g.lineTo(x0 + Math.sin(y * 0.01 + salt) * W * 0.006, y); g.stroke();
+    for (let y = H * 0.01; y <= H * 0.56; y += H * 0.028) {
+      const x = x0 + Math.sin(y * 0.01 + salt) * W * 0.006, tw = 0.75 + 0.25 * Math.sin(t * 2.2 + y * 0.05 + salt), rad = W * 0.014;
+      const gl = g.createRadialGradient(x, y, 0, x, y, rad); gl.addColorStop(0, `rgba(170,255,250,${0.95 * tw})`); gl.addColorStop(0.35, `rgba(60,230,230,${0.55 * tw})`); gl.addColorStop(1, 'rgba(40,220,220,0)');
+      g.fillStyle = gl; g.fillRect(x - rad, y - rad, 2 * rad, 2 * rad); rr();
+    }
+  }
+  g.restore();
+}
+
+// ---- the table: warm wood planks running toward the wall
+function masa(g, S) {
+  const W = S.W, H = S.H, y0 = H * 0.5;
+  const gr = g.createLinearGradient(0, y0, 0, H); gr.addColorStop(0, '#7a4f31'); gr.addColorStop(0.4, '#93613c'); gr.addColorStop(1, '#6e4529');
+  g.fillStyle = gr; g.fillRect(0, y0, W, H - y0);
+  g.fillStyle = 'rgba(40,22,10,0.5)'; g.fillRect(0, y0, W, H * 0.006);   // the far edge
+  g.strokeStyle = 'rgba(45,25,12,0.35)'; g.lineWidth = Math.max(1, W * 0.002);
+  for (let i = -6; i <= 6; i++) { g.beginPath(); g.moveTo(W / 2 + i * W * 0.11, y0); g.lineTo(W / 2 + i * W * 0.32, H); g.stroke(); }
+  const r = rng(52); g.strokeStyle = 'rgba(60,32,14,0.18)';
+  for (let i = 0; i < 40; i++) { const x = r() * W, y = y0 + r() * (H - y0); g.beginPath(); g.moveTo(x, y); g.quadraticCurveTo(x + W * 0.02, y + H * 0.01, x + W * 0.05, y + H * 0.004); g.stroke(); }
+}
+
+// ---- her, from the waist up behind the table. Proportions are the frame's: head centre (0.5 W, 0.205 H)
+const KIZ = { ten: '#e7b493', tenG: '#c98d6f', sac: '#3b2419', sacA: '#5a3826', ust: '#f3e3f2', desen: '#9a6fd0', dudak: '#c66d6a', kas: '#3a2318' };
+function govde(g, S, t, P) {   // torso, neck, the head; P: { bak (0 down at the slime, 1 at the camera), konus (mouth), gul (smile), egim (head tilt) }
+  const W = S.W, H = S.H, cx = W * 0.5 + W * 0.006 * Math.sin(t * 1.1), u = W;
+  // torso: a cream t-shirt with small lilac flowers, short sleeves
+  const sy = H * 0.315, sw = u * 0.255;
+  g.save(); g.fillStyle = 'rgba(60,40,30,0.28)'; g.filter = `blur(${(u * 0.025).toFixed(1)}px)`; g.beginPath(); g.ellipse(cx + u * 0.02, H * 0.36, sw * 1.2, H * 0.17, 0, 0, TAU); g.fill(); g.restore();   // her soft shadow on the wall behind
+  g.fillStyle = KIZ.ust; g.beginPath(); g.moveTo(cx - sw, sy + u * 0.03); g.quadraticCurveTo(cx - sw * 0.95, sy - u * 0.01, cx - u * 0.1, sy - u * 0.02);
+  g.lineTo(cx + u * 0.1, sy - u * 0.02); g.quadraticCurveTo(cx + sw * 0.95, sy - u * 0.01, cx + sw, sy + u * 0.03);
+  g.lineTo(cx + u * 0.21, H * 0.56); g.lineTo(cx - u * 0.21, H * 0.56); g.closePath(); g.fill();
+  const r = rng(61); g.fillStyle = KIZ.desen;
+  for (let i = 0; i < 90; i++) { const x = cx + (r() - 0.5) * u * 0.46, y = sy + r() * (H * 0.56 - sy); g.globalAlpha = 0.7; for (let p = 0; p < 4; p++) { g.beginPath(); g.arc(x + Math.cos(p * 1.57) * u * 0.004, y + Math.sin(p * 1.57) * u * 0.004, u * 0.0035, 0, TAU); g.fill(); } }   // small four-petal flowers
+  g.globalAlpha = 1;
+  const sg = g.createLinearGradient(cx - sw, 0, cx + sw, 0); sg.addColorStop(0, 'rgba(120,90,100,0.22)'); sg.addColorStop(0.5, 'rgba(0,0,0,0)'); sg.addColorStop(1, 'rgba(120,90,100,0.18)');
+  g.fillStyle = sg; g.fillRect(cx - sw, sy - u * 0.02, sw * 2, H * 0.56 - sy);
+  // neck and the scoop neckline, a thin chain
+  g.fillStyle = KIZ.tenG; g.beginPath(); g.roundRect(cx - u * 0.052, H * 0.255, u * 0.104, H * 0.06, u * 0.025); g.fill();
+  g.fillStyle = KIZ.ten; g.beginPath(); g.ellipse(cx, sy - u * 0.005, u * 0.1, u * 0.05, 0, 0, Math.PI); g.fill();
+  g.strokeStyle = 'rgba(205,175,110,0.8)'; g.lineWidth = Math.max(1, u * 0.002); g.beginPath(); g.ellipse(cx, sy - u * 0.004, u * 0.07, u * 0.036, 0, 0.15, Math.PI - 0.15); g.stroke();
+  bas(g, S, t, cx, P);
+}
+function bas(g, S, t, cx, P) {
+  const W = S.W, H = S.H, u = W, bak = P.bak || 0, konus = P.konus || 0, gul = P.gul || 0;
+  const hy = H * 0.205 - u * 0.012 * (1 - bak), rx = u * 0.088, ry = u * 0.108, egim = (P.egim || 0) + 0.04 * Math.sin(t * 0.9);
+  g.save(); g.translate(cx, hy); g.rotate(egim);
+  // the bun at the back, the hair behind the face
+  g.fillStyle = KIZ.sac; g.beginPath(); g.ellipse(0, -ry * 1.02, rx * 0.55, ry * 0.42, 0, 0, TAU); g.fill();
+  g.beginPath(); g.ellipse(0, -ry * 0.05, rx * 1.12, ry * 1.05, 0, 0, TAU); g.fill();
+  // the face: an egg, the chin a little narrower
+  const yuz = () => { g.beginPath(); g.moveTo(0, -ry); g.bezierCurveTo(rx * 0.62, -ry, rx, -ry * 0.5, rx, 0); g.bezierCurveTo(rx, ry * 0.5, rx * 0.5, ry * 0.97, 0, ry);
+    g.bezierCurveTo(-rx * 0.5, ry * 0.97, -rx, ry * 0.5, -rx, 0); g.bezierCurveTo(-rx, -ry * 0.5, -rx * 0.62, -ry, 0, -ry); g.closePath(); };
+  const fg = g.createRadialGradient(-rx * 0.25, -ry * 0.15, rx * 0.2, 0, 0, ry * 1.1); fg.addColorStop(0, '#f0c3a3'); fg.addColorStop(1, KIZ.tenG);
+  g.fillStyle = fg; yuz(); g.fill();
+  g.fillStyle = 'rgba(225,120,110,0.16)'; for (const s of [-1, 1]) { g.beginPath(); g.ellipse(s * rx * 0.52, ry * 0.28, rx * 0.22, ry * 0.12, 0, 0, TAU); g.fill(); }   // cheeks
+  // hair over the forehead: a centre parting, loose strands down beside the face
+  g.fillStyle = KIZ.sac; g.beginPath(); g.moveTo(-rx * 1.08, ry * 0.1); g.bezierCurveTo(-rx * 1.1, -ry * 0.9, -rx * 0.35, -ry * 1.12, 0, -ry * 0.98);
+  g.bezierCurveTo(rx * 0.35, -ry * 1.12, rx * 1.1, -ry * 0.9, rx * 1.08, ry * 0.1); g.bezierCurveTo(rx * 0.85, -ry * 0.45, rx * 0.4, -ry * 0.72, 0, -ry * 0.78);
+  g.bezierCurveTo(-rx * 0.4, -ry * 0.72, -rx * 0.85, -ry * 0.45, -rx * 1.08, ry * 0.1); g.closePath(); g.fill();
+  g.strokeStyle = KIZ.sacA; g.lineWidth = Math.max(1, u * 0.0025);
+  for (const s of [-1, 1]) { g.beginPath(); g.moveTo(s * rx * 0.75, -ry * 0.55); g.bezierCurveTo(s * rx * 1.05, -ry * 0.1, s * rx * 0.98, ry * 0.4, s * rx * 1.02 + Math.sin(t * 1.3 + s) * u * 0.003, ry * 0.75); g.stroke(); }
+  g.fillStyle = 'rgba(215,170,80,0.9)'; for (const s of [-1, 1]) { g.beginPath(); g.arc(s * rx * 1.0, ry * 0.25, u * 0.005, 0, TAU); g.fill(); }   // small gold earrings
+  // eyes: looking down at the slime the lids are low; looking at us they open, dark irises, a catch-light
+  const ey = -ry * 0.08 + ry * 0.04 * (1 - bak), acik = lerp(0.28, 1, bak) * (1 - 0.35 * gul);
+  for (const s of [-1, 1]) {
+    const ex = s * rx * 0.42, ew = rx * 0.25, eh = ew * 0.5 * acik;
+    g.fillStyle = '#fbf6f2'; g.beginPath(); g.ellipse(ex, ey, ew, Math.max(0.5, eh), 0, 0, TAU); g.fill();
+    g.save(); g.beginPath(); g.ellipse(ex, ey, ew, Math.max(0.5, eh), 0, 0, TAU); g.clip();
+    g.fillStyle = '#4a2c1c'; g.beginPath(); g.arc(ex + s * ew * 0.05, ey + ew * 0.25 * (1 - bak), ew * 0.52, 0, TAU); g.fill();
+    g.fillStyle = '#1a0f0a'; g.beginPath(); g.arc(ex + s * ew * 0.05, ey + ew * 0.25 * (1 - bak), ew * 0.25, 0, TAU); g.fill();
+    g.fillStyle = 'rgba(255,255,255,0.9)'; g.beginPath(); g.arc(ex - ew * 0.15, ey - ew * 0.05, ew * 0.11, 0, TAU); g.fill(); g.restore();
+    g.strokeStyle = '#2a1810'; g.lineWidth = Math.max(1.5, u * 0.004); g.beginPath(); g.ellipse(ex, ey, ew * 1.04, Math.max(0.5, eh) * 1.05, 0, Math.PI * 1.05, Math.PI * 1.95); g.stroke();   // the upper lid and lashes
+    g.strokeStyle = KIZ.kas; g.lineWidth = Math.max(2, u * 0.0055); g.beginPath(); g.moveTo(ex - s * ew * 0.95, ey - ew * 0.95); g.quadraticCurveTo(ex, ey - ew * (1.35 + 0.15 * bak), ex + s * ew * 1.05, ey - ew * 1.05); g.stroke();   // brows
+  }
+  g.strokeStyle = 'rgba(150,90,65,0.6)'; g.lineWidth = Math.max(1, u * 0.003); g.beginPath(); g.moveTo(rx * 0.02, ry * 0.05); g.quadraticCurveTo(rx * 0.12, ry * 0.3, -rx * 0.02, ry * 0.36); g.stroke();   // the nose
+  // the mouth: a closed smile, opening as she speaks
+  const my = ry * 0.58, mw = rx * (0.36 + 0.08 * gul), ac = konus * ry * 0.12;
+  g.fillStyle = KIZ.dudak; g.beginPath(); g.moveTo(-mw, my - gul * ry * 0.04); g.quadraticCurveTo(0, my - ry * 0.05, mw, my - gul * ry * 0.05);
+  g.quadraticCurveTo(0, my + ry * 0.08 + ac + gul * ry * 0.03, -mw, my - gul * ry * 0.04); g.closePath(); g.fill();
+  if (ac > 0.5) { g.fillStyle = '#5a2422'; g.beginPath(); g.ellipse(0, my + ac * 0.45, mw * 0.55, ac * 0.42, 0, 0, TAU); g.fill(); }
+  g.restore();
+  return { cx, hy };
+}
+
+// ---- the slime: one big lilac mass on the table, glossy folds that follow the hands, glitter once it is added
+function slimeSekil(S, t, eller) {   // its outline: an ellipse whose top edge lumps up and is pushed where the hands press
+  const W = S.W, H = S.H, cx = W * 0.5, cy = H * 0.86, rx = W * 0.44, ry = H * 0.25, pts = [];
+  for (let i = 0; i < 96; i++) {
+    const a = (i / 96) * TAU, x0 = cx + Math.cos(a) * rx, y0 = cy + Math.sin(a) * ry;
+    let dy = (Math.sin(a * 5 + 0.7) * 0.016 + Math.sin(a * 11 + 1.3) * 0.008 + Math.sin(a * 9 + t * 0.6) * 0.005) * H;   // lumpy, a mass not a sheet
+    for (const e of eller) { const d = Math.hypot(x0 - e.x, (y0 - e.y) * 1.6) / (W * 0.16); if (d < 1) dy += (1 - d) ** 2 * e.bas * H * 0.02; }
+    pts.push([x0, y0 + (Math.sin(a) < 0 ? dy : 0)]);
+  }
+  return pts;
+}
+function slime(g, S, t, eller, durum) {   // durum: { islak 0-1, sim 0-1 }
+  const W = S.W, H = S.H, pts = slimeSekil(S, t, eller), yol = () => { g.beginPath(); pts.forEach(([x, y], i) => (i ? g.lineTo(x, y) : g.moveTo(x, y))); g.closePath(); };
+  g.save();
+  g.fillStyle = 'rgba(60,30,40,0.25)'; g.filter = `blur(${(W * 0.01).toFixed(1)}px)`; g.translate(0, H * 0.008); yol(); g.fill(); g.restore();   // its shadow on the wood
+  g.save(); g.translate(0, H * 0.012); g.fillStyle = '#7d55b8'; yol(); g.fill(); g.restore();   // its rounded far rim, a shade darker, below the top surface
+  g.save(); yol(); g.clip();
+  const gr = g.createLinearGradient(0, H * 0.6, 0, H); gr.addColorStop(0, '#c7a6ee'); gr.addColorStop(0.35, '#b38de4'); gr.addColorStop(1, '#9a72d2');
+  g.fillStyle = gr; g.fillRect(0, H * 0.45, W, H * 0.6);
+  for (const e of eller) {   // pressed in round each hand: a darker hollow, lighter rims
+    const hg = g.createRadialGradient(e.x, e.y + H * 0.01, 0, e.x, e.y + H * 0.01, W * 0.2); hg.addColorStop(0, `rgba(95,55,150,${0.28 * e.bas + 0.1})`); hg.addColorStop(0.55, 'rgba(95,55,150,0)'); hg.addColorStop(0.75, 'rgba(235,220,255,0.12)'); hg.addColorStop(1, 'rgba(235,220,255,0)');
+    g.fillStyle = hg; g.fillRect(e.x - W * 0.2, e.y - W * 0.2, W * 0.4, W * 0.4);
+  }
+  // the folds: glossy ridges that curve toward the nearest hand; their dark undersides first
+  const r = rng(73), parl = 0.55 + 0.45 * (durum.islak || 0);
+  g.save(); g.filter = `blur(${(W * 0.0025).toFixed(1)}px)`; g.lineCap = 'round';
+  for (let i = 0; i < 26; i++) {
+    const x = W * (0.16 + r() * 0.68), y = H * (0.65 + r() * 0.33), L = W * (0.08 + r() * 0.16), a0 = r() * TAU, ph = r() * TAU;
+    let hx = 0, hy = 0, best = 1e9; for (const e of eller) { const d = Math.hypot(x - e.x, y - e.y); if (d < best) { best = d; hx = e.x; hy = e.y; } }
+    const pull = clamp(1 - best / (W * 0.45)), ang = lerp(a0, Math.atan2(hy - y, hx - x), pull * 0.8) + 0.15 * Math.sin(t * 0.8 + ph);
+    const x1 = x + Math.cos(ang) * L, y1 = y + Math.sin(ang) * L * 0.5, mx = (x + x1) / 2 + Math.sin(ang) * L * 0.18, my = (y + y1) / 2 - Math.cos(ang) * L * 0.1;
+    g.strokeStyle = 'rgba(85,45,140,0.16)'; g.lineWidth = W * (0.022 + r() * 0.02); g.beginPath(); g.moveTo(x, y + H * 0.006); g.quadraticCurveTo(mx, my + H * 0.006, x1, y1 + H * 0.006); g.stroke();   // the fold's shaded side
+    g.strokeStyle = `rgba(250,245,255,${(0.22 + r() * 0.2) * parl})`; g.lineWidth = W * (0.008 + r() * 0.008); g.beginPath(); g.moveTo(x, y); g.quadraticCurveTo(mx, my, x1, y1); g.stroke();   // its lit crest
+    g.strokeStyle = `rgba(255,255,255,${0.55 * parl})`; g.lineWidth = W * 0.0025; g.beginPath(); g.moveTo(lerp(x, mx, 0.4), lerp(y, my, 0.4)); g.quadraticCurveTo(mx, my, lerp(mx, x1, 0.5), lerp(my, y1, 0.5)); g.stroke();   // a sharp glint on it
+  }
+  g.restore();
+  for (const [px, py, pr] of [[0.32, 0.7, 0.06], [0.7, 0.74, 0.05], [0.5, 0.9, 0.08], [0.22, 0.88, 0.05]]) {   // soft specular patches from the room light
+    const sg = g.createRadialGradient(W * px, H * py, 0, W * px, H * py, W * pr); sg.addColorStop(0, `rgba(255,255,255,${0.35 * parl})`); sg.addColorStop(1, 'rgba(255,255,255,0)');
+    g.fillStyle = sg; g.beginPath(); g.ellipse(W * px, H * py, W * pr * 1.6, W * pr * 0.7, -0.2, 0, TAU); g.fill(); }
+  if (durum.islak > 0) {   // fresh water: a glassy sheet spreading where it was poured
+    const k = durum.islak, wx = W * 0.42, wy = H * 0.68, wr = W * (0.05 + 0.16 * k);
+    const wg = g.createRadialGradient(wx, wy, 0, wx, wy, wr); wg.addColorStop(0, `rgba(240,245,255,${0.35 * k})`); wg.addColorStop(0.7, `rgba(220,230,255,${0.18 * k})`); wg.addColorStop(1, 'rgba(220,230,255,0)');
+    g.fillStyle = wg; g.beginPath(); g.ellipse(wx, wy, wr, wr * 0.45, 0, 0, TAU); g.fill();
+  }
+  if (durum.sim > 0) {   // glitter in the slime, turning slowly as it is kneaded
+    const rs = rng(91), n = Math.round(420 * durum.sim);
+    for (let i = 0; i < n; i++) {
+      const a = rs() * TAU, rr = Math.sqrt(rs()) * 0.95, sp = 0.05 * Math.sin(t * 0.7 + i);
+      const x = W * 0.5 + Math.cos(a + sp) * rr * W * 0.41, y = H * 0.86 + Math.sin(a + sp) * rr * H * 0.23, tw = 0.5 + 0.5 * Math.sin(t * 9 + i * 1.7);
+      g.fillStyle = i % 3 ? `rgba(235,240,255,${0.55 + 0.45 * tw})` : `rgba(255,225,150,${0.5 + 0.5 * tw})`; g.fillRect(x, y, W * 0.0028, W * 0.0028);
+      if (tw > 0.93) { g.fillStyle = 'rgba(255,255,255,0.9)'; g.fillRect(x - W * 0.004, y, W * 0.0105, W * 0.0012); g.fillRect(x + W * 0.0008, y - W * 0.004, W * 0.0012, W * 0.0105); }
+    }
+  }
+  const sp = g.createLinearGradient(0, H * 0.6, 0, H * 0.68); sp.addColorStop(0, `rgba(255,255,255,${0.3 * parl})`); sp.addColorStop(1, 'rgba(255,255,255,0)');   // the top edge catches the room light
+  g.fillStyle = sp; g.fillRect(0, H * 0.58, W, H * 0.12);
+  g.restore();
+  g.strokeStyle = 'rgba(240,230,255,0.6)'; g.lineWidth = Math.max(1, W * 0.002); g.beginPath(); pts.forEach(([x, y], i) => (Math.sin((i / 96) * TAU) < -0.15) && (i ? g.lineTo(x, y) : g.moveTo(x, y))); g.stroke();
+}
+function kol(g, S, sx, sy, hx, hy, dis, el) {   // a bare arm from the sleeve to the hand; el: { bas (press), tut (closed round something), ang }
+  const W = S.W, u = W, [ex, ey] = ik(sx, sy, hx, hy, u * 0.32, u * 0.33, dis);   // long enough to bend: the elbow shows
+  const seg = (x0, y0, x1, y1, w0, w1, c) => { const dx = x1 - x0, dy = y1 - y0, L = Math.hypot(dx, dy) || 1, nx = -dy / L, ny = dx / L;
+    g.fillStyle = c; g.beginPath(); g.moveTo(x0 + nx * w0 / 2, y0 + ny * w0 / 2); g.lineTo(x1 + nx * w1 / 2, y1 + ny * w1 / 2); g.lineTo(x1 - nx * w1 / 2, y1 - ny * w1 / 2); g.lineTo(x0 - nx * w0 / 2, y0 - ny * w0 / 2); g.closePath(); g.fill();
+    g.beginPath(); g.arc(x1, y1, w1 / 2, 0, TAU); g.fill(); };
+  seg(sx, sy, ex, ey, u * 0.088, u * 0.072, KIZ.ten); seg(ex, ey, hx, hy, u * 0.07, u * 0.05, KIZ.ten);
+  const sl = g.createLinearGradient(sx - dis * u * 0.04, 0, sx + dis * u * 0.04, 0); sl.addColorStop(0, 'rgba(150,95,75,0.25)'); sl.addColorStop(1, 'rgba(0,0,0,0)');
+  const kx = lerp(sx, ex, 0.38), ky = lerp(sy, ey, 0.38); seg(sx, sy - u * 0.01, kx, ky, u * 0.112, u * 0.1, KIZ.ust);   // the short sleeve: the shirt's cloth down the upper arm
+  g.fillStyle = KIZ.desen; for (let i = 0; i < 6; i++) { const f = (i + 0.5) / 6, px = lerp(sx, kx, f) + (i % 2 ? 1 : -1) * u * 0.02, py = lerp(sy, ky, f); for (let p = 0; p < 4; p++) { g.beginPath(); g.arc(px + Math.cos(p * 1.57) * u * 0.004, py + Math.sin(p * 1.57) * u * 0.004, u * 0.0035, 0, TAU); g.fill(); } }
+  return [ex, ey, Math.atan2(hy - ey, hx - ex)];
+}
+function el(g, S, hx, hy, ang, o = {}) {   // the back of a hand, four fingers and a thumb, pointing along ang
+  const u = S.W, s = u * 0.06, tut = o.tut || 0;
+  g.save(); g.translate(hx, hy); g.rotate(ang - Math.PI / 2);
+  g.fillStyle = KIZ.ten; g.beginPath(); g.ellipse(0, 0, s * 0.95, s * 0.8, 0, 0, TAU); g.fill();
+  g.strokeStyle = 'rgba(140,80,60,0.45)'; g.lineWidth = Math.max(1, u * 0.0022);
+  for (let f = 0; f < 4; f++) { const fx = (f - 1.5) * s * 0.45 * (1 - 0.35 * tut), L = s * (1.25 - Math.abs(f - 1.5) * 0.18) * (1 - 0.45 * tut);
+    g.fillStyle = KIZ.ten; g.beginPath(); g.roundRect(fx - s * 0.2, s * 0.35, s * 0.4, L, s * 0.2); g.fill(); g.stroke();
+    g.fillStyle = 'rgba(255,225,215,0.7)'; g.beginPath(); g.ellipse(fx, s * 0.35 + L - s * 0.14, s * 0.11, s * 0.08, 0, 0, TAU); g.fill(); }   // fingers, outlined, with nails
+  g.beginPath(); g.ellipse(-o.yon * s * 0.9, s * 0.2, s * 0.22, s * 0.55, o.yon * 0.6, 0, TAU); g.fill();   // the thumb, on the inner side
+  g.strokeStyle = 'rgba(150,90,70,0.3)'; g.lineWidth = Math.max(1, u * 0.0015); for (let f = 0; f < 3; f++) { g.beginPath(); g.moveTo((f - 1) * s * 0.45, s * 0.2); g.lineTo((f - 1) * s * 0.45, s * 0.5); g.stroke(); }
+  g.restore();
+}
+function batik(g, S, e, ang) {   // the slime closing over the sunk fingertips: a lilac lip with a bright rim
+  const u = S.W, s = u * 0.06, d = s * (0.22 + 0.25 * e.bas);
+  const tx = e.x + Math.cos(ang) * s * 1.75, ty = e.y + Math.sin(ang) * s * 1.75;
+  const lg = g.createLinearGradient(tx, ty - d, tx, ty + d); lg.addColorStop(0, 'rgba(190,155,238,0.0)'); lg.addColorStop(0.35, 'rgba(190,155,238,0.92)'); lg.addColorStop(1, 'rgba(170,135,225,0.97)');
+  g.fillStyle = lg; g.beginPath(); g.ellipse(tx, ty + d * 0.2, s * 1.05, d, 0, 0, TAU); g.fill();
+  g.strokeStyle = 'rgba(255,250,255,0.7)'; g.lineWidth = Math.max(1.5, u * 0.003); g.beginPath(); g.ellipse(tx, ty + d * 0.2, s * 0.95, d * 0.75, 0, Math.PI * 1.1, Math.PI * 1.9); g.stroke();
+}
+
+// ---- props on the table: clear glue bottles and the water cup on the left, glitter jar and boxes on the right
+function bardakSu(g, S, x, y, ang, dolu) {   // a small clear plastic cup; (x, y) the bottom centre; tilts about its bottom
+  const u = S.W, w = u * 0.1, h = u * 0.12;
+  g.save(); g.translate(x, y); g.rotate(ang);
+  g.fillStyle = 'rgba(225,235,245,0.45)'; g.beginPath(); g.moveTo(-w * 0.42, 0); g.lineTo(-w * 0.5, -h); g.lineTo(w * 0.5, -h); g.lineTo(w * 0.42, 0); g.closePath(); g.fill();
+  if (dolu > 0) { g.save(); g.beginPath(); g.moveTo(-w * 0.42, 0); g.lineTo(-w * 0.5, -h); g.lineTo(w * 0.5, -h); g.lineTo(w * 0.42, 0); g.closePath(); g.clip(); g.rotate(-ang);   // water stays level
+    g.fillStyle = 'rgba(120,175,230,0.7)'; g.fillRect(-w, -h * dolu * 0.85 + Math.sin(ang) * w * 0.3, w * 2, h * 2); g.restore(); }
+  g.strokeStyle = 'rgba(255,255,255,0.95)'; g.lineWidth = Math.max(1.5, u * 0.004); g.beginPath(); g.moveTo(-w * 0.42, 0); g.lineTo(-w * 0.5, -h); g.lineTo(w * 0.5, -h); g.lineTo(w * 0.42, 0); g.stroke();
+  g.strokeStyle = 'rgba(80,100,120,0.35)'; g.lineWidth = Math.max(1, u * 0.002); g.beginPath(); g.ellipse(0, -h, w * 0.5, w * 0.08, 0, 0, TAU); g.stroke();   // the rim
+  g.restore();
+}
+function tutkal(g, S, x, y, s) {   // a bottle of clear glue, its label
+  const u = S.W, w = u * 0.1 * s, h = u * 0.22 * s;
+  g.fillStyle = 'rgba(230,236,240,0.55)'; g.beginPath(); g.roundRect(x - w / 2, y - h, w, h, w * 0.18); g.fill();
+  g.fillStyle = '#e8467c'; g.beginPath(); g.roundRect(x - w * 0.2, y - h - w * 0.35, w * 0.4, w * 0.4, w * 0.08); g.fill();
+  g.fillStyle = '#f6f2f6'; g.fillRect(x - w * 0.46, y - h * 0.62, w * 0.92, h * 0.3);
+  g.fillStyle = '#6d3fa0'; setType(g, TYPE, 'text', w * 0.17, { weight: 600 }); g.textAlign = 'center'; g.fillText('Şeffaf', x, y - h * 0.5); g.fillText('Tutkal', x, y - h * 0.4);
+  g.strokeStyle = 'rgba(255,255,255,0.8)'; g.lineWidth = Math.max(1, u * 0.002); g.beginPath(); g.moveTo(x - w * 0.32, y - h * 0.9); g.lineTo(x - w * 0.32, y - h * 0.1); g.stroke();
+}
+function simKavanoz(g, S, x, y, ang) {   // a squat jar of silver glitter, (x, y) its bottom centre
+  const u = S.W, w = u * 0.11, h = u * 0.11;
+  g.save(); g.translate(x, y); g.rotate(ang);
+  g.fillStyle = '#c3c7d0'; g.beginPath(); g.roundRect(-w / 2, -h, w, h, w * 0.12); g.fill();
+  const r = rng(102); for (let i = 0; i < 60; i++) { g.fillStyle = r() < 0.5 ? '#f4f6fa' : '#8d929c'; g.fillRect(-w / 2 + r() * w, -h + r() * h, u * 0.003, u * 0.003); }
+  g.fillStyle = '#e8467c'; g.beginPath(); g.roundRect(-w * 0.55, -h - w * 0.2, w * 1.1, w * 0.22, w * 0.05); g.fill();   // the shaker lid, its holes
+  g.fillStyle = 'rgba(60,20,40,0.6)'; for (let i = -2; i <= 2; i++) { g.beginPath(); g.arc(i * w * 0.18, -h - w * 0.09, w * 0.035, 0, TAU); g.fill(); }
+  g.fillStyle = '#ffffff'; setType(g, TYPE, 'text', w * 0.2, { weight: 600 }); g.textAlign = 'center'; g.fillText('SİM', 0, -h * 0.45);
+  g.restore();
+}
+function kutular(g, S) {   // stacked slime boxes at the right edge
+  const u = S.W, x = S.W * 0.9, y = S.H * 0.6;
+  for (const [i, c] of ['#f28fb8', '#7cc4f2', '#f5d76a', '#b88ee8'].entries()) { g.fillStyle = c; g.beginPath(); g.roundRect(x - u * 0.08 + (i % 2) * u * 0.01, y - (i + 1) * u * 0.06, u * 0.18, u * 0.06, u * 0.012); g.fill();
+    g.fillStyle = 'rgba(255,255,255,0.3)'; g.fillRect(x - u * 0.07, y - (i + 1) * u * 0.06 + u * 0.006, u * 0.16, u * 0.008); }
+}
+
+// ---- the take: what her hands do, second by second
+function eller(t) {   // the two hands: position (frame fractions), how hard they press, what they hold
+  const dur = Math.max(kf(t, [[9.0, 0], [9.3, 1], [11.2, 1], [11.5, 0]]), kf(t, [[15.6, 0], [15.9, 1], [18.3, 1], [18.6, 0]])), kk = 1 - dur;   // she stops to talk
+  const yogur = (ph) => (0.5 - 0.5 * Math.cos(TAU * t / 1.35 + ph)) * kk;   // kneading, the hands taking turns
+  const sol0 = [0.38 + 0.02 * Math.sin(TAU * t / 1.35) * kk, 0.65 + 0.026 * yogur(0)], sag0 = [0.62 - 0.02 * Math.sin(TAU * t / 1.35) * kk, 0.65 + 0.026 * yogur(Math.PI)];
+  // left hand: the water cup (3.0-5.7)
+  const solYol = [[3.0, sol0], [3.45, [0.14, 0.5]], [3.8, [0.31, 0.42]], [4.85, [0.31, 0.42]], [5.25, [0.14, 0.5]], [5.7, sol0]];
+  const sol = t >= 3.0 && t < 5.7 ? kf(t, solYol) : sol0;
+  // right hand: the stretch (7.0-8.7), the glitter jar (11.6-14.4)
+  const sagYol = t < 10 ? [[7.0, sag0], [7.45, [0.66, 0.5]], [7.9, [0.7, 0.4]], [8.25, [0.69, 0.42]], [8.7, sag0]]
+    : [[11.6, sag0], [12.0, [0.86, 0.52]], [12.35, [0.7, 0.43]], [13.6, [0.7, 0.43]], [14.0, [0.86, 0.52]], [14.4, sag0]];
+  let sag = (t >= 7.0 && t < 8.7) || (t >= 11.6 && t < 14.4) ? kf(t, sagYol) : sag0;
+  if (t >= 12.35 && t < 13.6) sag = [sag[0] + 0.012 * Math.sin(t * 22), sag[1] + 0.012 * Math.sin(t * 22)];   // shaking the jar
+  const solSerbest = t >= 3.0 && t < 5.7, sagSerbest = (t >= 7.0 && t < 8.7) || (t >= 11.6 && t < 14.4);
+  return { sol, sag, solBas: solSerbest ? 0 : yogur(0), sagBas: sagSerbest ? 0 : yogur(Math.PI), solSerbest, sagSerbest };
+}
+function sYayin(g, k, t, S) {
+  const W = S.W, H = S.H, E = eller(t);
+  const bak = Math.max(kf(t, [[9.0, 0], [9.35, 1], [11.0, 1], [11.4, 0]]), kf(t, [[2.9, 0], [3.15, 0.8], [3.4, 0.8], [3.6, 0]]), kf(t, [[11.4, 0], [11.65, 0.8], [11.9, 0.8], [12.1, 0]]), kf(t, [[15.6, 0], [15.9, 1], [17.4, 1], [17.8, 0]]));
+  const konus = agiz(t);
+  const gul = Math.max(0.35, kf(t, [[9.2, 0.35], [9.5, 1], [11.2, 1], [11.6, 0.4]]), kf(t, [[13.2, 0.35], [13.6, 0.9], [14.6, 0.9], [15.0, 0.4]]));
+  oda(g, S, t); masa(g, S); kutular(g, S);
+  // her body, then the slime over the table in front of her, then her arms and hands on it
+  govde(g, S, t, { bak, konus, gul, egim: -0.06 * (1 - bak) + 0.03 * Math.sin(t * 0.7) });
+  const islak = clamp((t - 4.0) / 1.0) * (1 - 0.6 * clamp((t - 7) / 5)), sim = clamp((t - 12.4) / 1.3);
+  const sX = (p) => p[0] * W, sY = (p) => p[1] * H;
+  const ellerD = [];
+  if (!E.solSerbest) ellerD.push({ x: sX(E.sol), y: sY(E.sol), bas: E.solBas });
+  if (!E.sagSerbest || (t >= 7.0 && t < 7.45)) ellerD.push({ x: sX(E.sag), y: sY(E.sag), bas: E.sagBas });
+  slime(g, S, t, ellerD, { islak, sim });
+  if (t >= 7.45 && t < 8.7) {   // the stretch: the mass rises in a cone under her hand and a wide glossy band hangs from it
+    const k2 = t < 8.3 ? EASE.out(clamp((t - 7.45) / 0.35)) : 1 - EASE.inOut((t - 8.3) / 0.4), bx = W * 0.63, by = H * 0.665, hx = sX(E.sag), hy = sY(E.sag) + W * 0.045;
+    const w0 = W * 0.16, wm = W * (0.035 + 0.02 * (1 - k2)), wh = W * 0.075, my = lerp(by, hy, 0.55) + H * 0.02 * Math.sin(t * 3), mx = lerp(bx, hx, 0.55);
+    const sg2 = g.createLinearGradient(bx - w0, 0, bx + w0, 0); sg2.addColorStop(0, '#9a72d2'); sg2.addColorStop(0.45, '#cfb0f4'); sg2.addColorStop(1, '#a37bd8');
+    g.fillStyle = sg2; g.beginPath(); g.moveTo(bx - w0, by + H * 0.01); g.bezierCurveTo(bx - w0 * 0.4, by - H * 0.01, mx - wm, my + H * 0.02, mx - wm, my);
+    g.bezierCurveTo(mx - wm, my - H * 0.02, hx - wh, hy + H * 0.02, hx - wh * 0.8, hy); g.quadraticCurveTo(hx, hy - W * 0.06, hx + wh * 0.8, hy);
+    g.bezierCurveTo(hx + wh, hy + H * 0.02, mx + wm, my - H * 0.02, mx + wm, my); g.bezierCurveTo(mx + wm, my + H * 0.02, bx + w0 * 0.4, by - H * 0.01, bx + w0, by + H * 0.01); g.closePath(); g.fill();
+    g.strokeStyle = 'rgba(255,255,255,0.75)'; g.lineWidth = Math.max(2, W * 0.004); g.lineCap = 'round';
+    g.beginPath(); g.moveTo(bx - w0 * 0.3, by - H * 0.002); g.quadraticCurveTo(mx - wm * 0.3, my, hx - wh * 0.3, hy + H * 0.005); g.stroke();
+    g.strokeStyle = 'rgba(255,255,255,0.35)'; g.beginPath(); g.moveTo(bx + w0 * 0.25, by); g.quadraticCurveTo(mx + wm * 0.4, my + H * 0.01, hx + wh * 0.4, hy + H * 0.01); g.stroke();
+  }
+  // the water: the cup in her left hand, the stream from its lip onto the slime
+  const cupT = t >= 3.45 && t < 5.25, cupAng = kf(t, [[3.8, 0], [4.1, 1.9], [4.65, 2.0], [4.9, 0]]);
+  const solP = [sX(E.sol), sY(E.sol)], sagP = [sX(E.sag), sY(E.sag)];
+  if (!cupT) bardakSu(g, S, W * 0.14, H * 0.53, 0, t < 4.0 ? 1 : 0.15);
+  tutkal(g, S, W * 0.05, H * 0.56, 0.95); tutkal(g, S, W * 0.16, H * 0.6, 0.8);
+  if (!(t >= 12.0 && t < 14.0)) simKavanoz(g, S, W * 0.86, H * 0.55, 0);
+  // the arms: shoulders under the sleeves, elbows bent out
+  const omuzL = [W * 0.27, H * 0.335], omuzR = [W * 0.73, H * 0.335];
+  const [, , aL] = kol(g, S, omuzL[0], omuzL[1], solP[0], solP[1], -1);
+  const [, , aR] = kol(g, S, omuzR[0], omuzR[1], sagP[0], sagP[1], 1);
+  if (cupT) bardakSu(g, S, solP[0] + W * 0.02, solP[1] + W * 0.03, cupAng, t < 4.1 ? 1 : lerp(1, 0.1, clamp((t - 4.1) / 0.6)));
+  el(g, S, solP[0], solP[1], aL, { yon: -1, tut: cupT ? 0.8 : 0 });
+  if (t >= 12.0 && t < 14.0) simKavanoz(g, S, sagP[0], sagP[1] + W * 0.02, kf(t, [[12.0, 0], [12.35, Math.PI], [13.6, Math.PI], [14.0, 0]]) + (t >= 12.35 && t < 13.6 ? 0.15 * Math.sin(t * 22) : 0));
+  el(g, S, sagP[0], sagP[1], aR, { yon: 1, tut: (t >= 7.45 && t < 8.5) || (t >= 12.0 && t < 14.0) ? 0.8 : 0 });
+  for (const e of ellerD) batik(g, S, e, e.x < W / 2 ? aL : aR);
+  if (cupT && cupAng > 1.3 && t < 4.8) {   // the stream from the cup's rim, thick and glassy, and a splash where it lands
+    const ca = cupAng, ox = solP[0] + W * 0.02, oy = solP[1] + W * 0.03, lx0 = W * 0.05, ly0 = -W * 0.12, rimx = ox + Math.cos(ca) * lx0 - Math.sin(ca) * ly0, rimy = oy + Math.sin(ca) * lx0 + Math.cos(ca) * ly0, tx = W * 0.44, ty = H * 0.68;   // the lip on the low side of the tilted rim
+    const kal = clamp((4.8 - t) / 0.3);
+    g.lineCap = 'round'; g.strokeStyle = `rgba(190,220,250,${0.8 * kal})`; g.lineWidth = W * 0.022; g.beginPath(); g.moveTo(rimx, rimy); g.quadraticCurveTo(rimx + W * 0.04, (rimy + ty) / 2, tx + Math.sin(t * 30) * 2, ty); g.stroke();
+    g.strokeStyle = `rgba(255,255,255,${0.85 * kal})`; g.lineWidth = W * 0.005; g.beginPath(); g.moveTo(rimx, rimy); g.quadraticCurveTo(rimx + W * 0.035, (rimy + ty) / 2, tx - W * 0.004, ty); g.stroke();
+    for (let i = 0; i < 10; i++) { const a = i * 0.63 + t * 7, d = W * 0.045 * ((t * 2.5 + i * 0.29) % 1); g.fillStyle = `rgba(235,245,255,${0.8 * kal})`; g.beginPath(); g.arc(tx + Math.cos(a) * d * 1.6, ty - Math.abs(Math.sin(a)) * d * 1.2 + d * d / (W * 0.03), W * 0.005, 0, TAU); g.fill(); }
+    g.strokeStyle = `rgba(240,248,255,${0.6 * kal})`; g.lineWidth = W * 0.003; const rr2 = W * (0.03 + 0.04 * ((t * 1.7) % 1)); g.beginPath(); g.ellipse(tx, ty + W * 0.005, rr2, rr2 * 0.3, 0, 0, TAU); g.stroke();
+  }
+  if (t >= 12.35 && t < 13.8) {   // glitter falling from the jar's lid in a widening cone onto the slime
+    const lx = sagP[0], ly = sagP[1] + W * 0.16, ty2 = H * 0.68, r = rng(117 + Math.floor(t * 24)), kal = clamp((13.8 - t) / 0.25);
+    for (let i = 0; i < 180; i++) { const life = r(), x = lx + (r() - 0.5) * W * (0.05 + 0.08 * life), y = lerp(ly, ty2, life * life * 0.5 + life * 0.5), tw = r();
+      g.fillStyle = tw < 0.6 ? `rgba(240,244,255,${0.95 * kal})` : `rgba(255,220,140,${0.9 * kal})`; g.fillRect(x, y, W * 0.0035, W * 0.0035);
+      if (tw > 0.95) { g.fillStyle = `rgba(255,255,255,${kal})`; g.fillRect(x - W * 0.005, y + W * 0.0015, W * 0.013, W * 0.0012); g.fillRect(x + W * 0.0012, y - W * 0.005, W * 0.0012, W * 0.013); } }
+  }
+  for (const [t0, t1, l1, l2] of SOZ) {   // what she says to each gift, in a speech bubble at the left of her head
+    if (t < t0 || t > t1) continue;
+    const a = clamp((t - t0) / 0.2) * clamp((t1 - t) / 0.25), bx = W * 0.04, by = H * 0.165, bw = W * 0.33, bh = W * 0.15, sc = 0.9 + 0.1 * EASE.out(clamp((t - t0) / 0.25));
+    g.save(); g.globalAlpha = a; g.translate(bx + bw, by + bh * 0.6); g.scale(sc, sc); g.translate(-(bx + bw), -(by + bh * 0.6));
+    g.fillStyle = 'rgba(255,255,255,0.96)'; g.beginPath(); g.roundRect(bx, by, bw, bh, W * 0.04); g.fill();
+    g.beginPath(); g.moveTo(bx + bw - W * 0.01, by + bh * 0.45); g.lineTo(bx + bw + W * 0.05, by + bh * 0.62); g.lineTo(bx + bw - W * 0.01, by + bh * 0.72); g.fill();
+    setType(g, TYPE, 'text', W * 0.038, { weight: 600 }); g.fillStyle = '#2a1d28'; g.textAlign = 'left'; g.fillText(l1, bx + W * 0.03, by + bh * 0.43); g.fillText(l2, bx + W * 0.03, by + bh * 0.8);
+    g.restore();
+  }
+}
+const SOZ = [   // [from, to, line 1, line 2]: her answers to the gifts, in a bubble while she says them (original TTS takes)
+  [3.1, 5.0, 'Su geldi,', 'döküyorum!'], [9.35, 11.5, 'Selam Elif,', 'hoş geldin!'], [11.6, 13.45, 'Sim geldi,', 'üç kutu!'], [15.75, 18.8, 'Yaren, su koruma', 'için teşekkürler!'],
+];
+// Original 24 fps loudness envelopes from the TTS takes. Audio files are not distributed.
+const AGIZ = [[3.25, [0.07, 0.12, 0.09, 0.6, 0.77, 0.38, 0.66, 1.0, 1.0, 0.99, 0.81, 0.48, 0.27, 0.72, 0.71, 0.45, 0.12, 0.0, 0.0, 0.0, 0.0, 0.14, 0.46, 1.0, 0.85, 0.09, 0.06, 0.65, 0.86, 0.81, 0.79, 0.75, 0.64, 0.68, 0.76, 0.68, 0.33, 0.02]], [9.5, [0.05, 0.12, 0.09, 0.66, 1.0, 0.85, 0.9, 0.99, 0.94, 0.81, 0.71, 0.55, 0.16, 0.0, 0.0, 0.0, 0.0, 0.13, 0.86, 0.88, 0.66, 0.74, 0.76, 0.2, 0.05, 0.04, 0.03, 0.01, 0.0, 0.0, 0.0, 0.0, 0.0, 0.02, 0.5, 1.0, 1.0, 0.82, 0.28, 0.2, 0.11, 0.12, 0.82, 0.83, 0.76, 0.72, 0.63, 0.37, 0.13, 0.44, 0.7, 0.75, 0.56, 0.08]], [11.75, [0.05, 0.12, 0.09, 0.64, 0.92, 0.95, 0.74, 0.77, 0.99, 1.0, 1.0, 0.7, 0.44, 0.34, 0.74, 0.69, 0.4, 0.06, 0.0, 0.0, 0.0, 0.0, 0.61, 1.0, 0.43, 0.1, 0.16, 0.03, 0.04, 0.49, 0.66, 0.07, 0.05, 0.31, 0.58, 0.31, 0.02]], [15.9, [0.63, 1.0, 1.0, 1.0, 1.0, 0.94, 0.73, 0.92, 0.9, 0.78, 0.75, 0.56, 0.15, 0.0, 0.0, 0.0, 0.0, 0.01, 0.1, 0.09, 0.12, 0.75, 0.49, 0.04, 0.08, 0.87, 0.94, 0.68, 0.83, 0.86, 0.97, 0.88, 0.86, 0.82, 0.76, 0.38, 0.09, 0.18, 0.76, 0.83, 0.87, 0.14, 0.09, 0.88, 0.75, 0.25, 0.21, 0.42, 0.88, 0.62, 0.05, 0.01, 0.02, 0.12, 0.84, 0.81, 0.65, 0.72, 0.81, 0.72, 0.66, 0.41, 0.16, 0.09, 0.08, 0.04]]];
+const agiz = (t) => { for (const [t0, a] of AGIZ) { const i = Math.floor((t - t0) * 24); if (i >= 0 && i < a.length) return a[i]; } return 0; };
+
+// ---- the live-stream interface: drawn after the picture's finish, crisp, like the phone draws it
+const YORUM = [
+  [0.3, 'lilamor27', 'su ekle!'], [0.9, 'bulutkavanozu', 'abla çok güzel oldu'], [1.7, 'sedef.k', 'sesi çok rahatlatıcı'], [2.4, 'minikmavi', 'su koruma 111'],
+  [3.3, 'deniz_07', 'su ekledim'], [4.2, 'morkopuklu', 'parlıyor şu an'], [5.0, 'ece.slime', 'sim de ekle'], [6.0, 'lilamor27', 'üstüne bas üstüne bas'],
+  [7.2, 'kumsal_23', 'uzat uzat'], [8.0, 'elif.03', 'abla adımı okur musun'], [10.2, 'elif.03', 'aaa okudu'], [11.0, 'bulutkavanozu', 'sim ekle lütfen'],
+  [12.6, 'sedef.k', 'çok yakıştı'], [13.6, 'morkopuklu', 'simli hali efsane'], [14.6, 'yaren.y', 'kaç gündür oynuyorsun bununla'], [16.0, 'ece.slime', '111 su koruma'],
+  [16.9, 'kumsal_23', 'abla bir daha uzat'], [17.8, 'lilamor27', 'bayıldım'], [18.6, 'selin.k', 'katıldı', 'katil'],
+];
+const HEDIYE = [   // gifts: [time, from, gift, count]
+  [3.0, 'deniz_07', 'Su ekle', 1], [9.0, 'elif.03', 'Adımı söyle', 1], [11.5, 'minik_yildiz', 'Sim ekle', 3], [15.6, 'yaren.y', 'Su koruma', 1],
+];
+const PANEL = [['Su koruma', 296, 'kalkan'], ['Su ekle', 787, 'damla'], ['Adımı söyle', null, 'balon'], ['Sim ekle', 160, 'yildiz']];
+function ikon(g, tur, x, y, s) {
+  if (tur === 'kalkan') { const gr = g.createLinearGradient(x, y - s, x, y + s); gr.addColorStop(0, '#5f8ef7'); gr.addColorStop(1, '#2b4fbf'); g.fillStyle = gr;
+    g.beginPath(); g.moveTo(x, y - s); g.lineTo(x + s * 0.85, y - s * 0.6); g.quadraticCurveTo(x + s * 0.8, y + s * 0.6, x, y + s); g.quadraticCurveTo(x - s * 0.8, y + s * 0.6, x - s * 0.85, y - s * 0.6); g.closePath(); g.fill();
+    g.fillStyle = '#d8ecff'; g.beginPath(); g.moveTo(x, y - s * 0.45); g.quadraticCurveTo(x + s * 0.35, y + s * 0.05, x, y + s * 0.35); g.quadraticCurveTo(x - s * 0.35, y + s * 0.05, x, y - s * 0.45); g.fill(); }
+  else if (tur === 'damla') { const gr = g.createLinearGradient(x, y - s, x, y + s); gr.addColorStop(0, '#7fd3ff'); gr.addColorStop(1, '#2a8be0'); g.fillStyle = gr;
+    g.beginPath(); g.moveTo(x, y - s); g.quadraticCurveTo(x + s * 0.85, y + s * 0.1, x + s * 0.6, y + s * 0.55); g.arc(x, y + s * 0.3, s * 0.65, 0.4, Math.PI - 0.4); g.quadraticCurveTo(x - s * 0.85, y + s * 0.1, x, y - s); g.fill();
+    g.fillStyle = 'rgba(255,255,255,0.7)'; g.beginPath(); g.ellipse(x - s * 0.25, y + s * 0.15, s * 0.12, s * 0.25, 0.4, 0, TAU); g.fill(); }
+  else if (tur === 'balon') { g.fillStyle = '#ff8fb6'; g.beginPath(); g.roundRect(x - s, y - s * 0.75, s * 2, s * 1.35, s * 0.55); g.fill(); g.beginPath(); g.moveTo(x - s * 0.3, y + s * 0.5); g.lineTo(x - s * 0.7, y + s); g.lineTo(x + s * 0.2, y + s * 0.5); g.fill();
+    g.fillStyle = '#fff'; for (const d of [-0.45, 0, 0.45]) { g.beginPath(); g.arc(x + d * s, y - s * 0.07, s * 0.13, 0, TAU); g.fill(); } }
+  else if (tur === 'yildiz') { for (const [dx, dy, ss, c] of [[0, 0, 1, '#ffd34d'], [0.75, -0.6, 0.45, '#fff2b0'], [-0.7, 0.55, 0.38, '#ffe27a']]) { g.fillStyle = c; const cx2 = x + dx * s, cy2 = y + dy * s, r2 = s * ss;
+      g.beginPath(); g.moveTo(cx2, cy2 - r2); g.quadraticCurveTo(cx2, cy2, cx2 + r2, cy2); g.quadraticCurveTo(cx2, cy2, cx2, cy2 + r2); g.quadraticCurveTo(cx2, cy2, cx2 - r2, cy2); g.quadraticCurveTo(cx2, cy2, cx2, cy2 - r2); g.fill(); } }
+}
+function avatar(g, x, y, r, ad) {   // a made-up user's avatar: a coloured circle with their initial
+  const h = [...ad].reduce((a, c) => a + c.charCodeAt(0), 0), renk = ['#f2a7c3', '#9fd3f5', '#f6d77d', '#b7a3f0', '#9fe3c1', '#f5b98a'][h % 6];
+  g.fillStyle = renk; g.beginPath(); g.arc(x, y, r, 0, TAU); g.fill();
+  const hiza = g.textAlign; g.fillStyle = 'rgba(40,30,40,0.75)'; setType(g, TYPE, 'text', r * 1.1, { weight: 600 }); g.textAlign = 'center'; g.fillText(ad[0].toLocaleUpperCase('tr'), x, y + r * 0.38); g.textAlign = hiza;
+}
+function hap(g, x, y, w, h, a = 0.38) { g.fillStyle = `rgba(0,0,0,${a})`; g.beginPath(); g.roundRect(x, y, w, h, h / 2); g.fill(); }
+function ARAYUZ(g, S, t) {
+  const W = S.W, H = S.H, u = W;
+  g.save(); g.textBaseline = 'alphabetic';
+  // top left: the channel
+  hap(g, u * 0.025, H * 0.028, u * 0.4, u * 0.1);
+  const ag = g.createRadialGradient(u * 0.075, H * 0.028 + u * 0.05, 0, u * 0.075, H * 0.028 + u * 0.05, u * 0.042); ag.addColorStop(0, '#d9c2f5'); ag.addColorStop(1, '#9b6fd6');
+  g.fillStyle = ag; g.beginPath(); g.arc(u * 0.075, H * 0.028 + u * 0.05, u * 0.04, 0, TAU); g.fill();
+  g.fillStyle = '#fe2c55'; g.beginPath(); g.roundRect(u * 0.045, H * 0.028 + u * 0.08, u * 0.06, u * 0.024, u * 0.012); g.fill();
+  setType(g, TYPE, 'text', u * 0.019, { weight: 600 }); g.fillStyle = '#fff'; g.textAlign = 'center'; g.fillText('CANLI', u * 0.075, H * 0.028 + u * 0.099);
+  g.textAlign = 'left'; setType(g, TYPE, 'text', u * 0.034, { weight: 600 }); g.fillText('slimeatolye', u * 0.13, H * 0.028 + u * 0.045);
+  g.fillStyle = '#fe2c55'; kalp(g, u * 0.142, H * 0.028 + u * 0.074, u * 0.016); g.fill();
+  setType(g, TYPE, 'text', u * 0.027); g.fillStyle = 'rgba(255,255,255,0.92)'; g.fillText('171,2B', u * 0.165, H * 0.028 + u * 0.083);
+  g.fillStyle = '#fe2c55'; g.beginPath(); g.arc(u * 0.385, H * 0.028 + u * 0.05, u * 0.03, 0, TAU); g.fill();
+  g.strokeStyle = '#fff'; g.lineWidth = u * 0.005; g.beginPath(); g.moveTo(u * 0.372, H * 0.028 + u * 0.05); g.lineTo(u * 0.398, H * 0.028 + u * 0.05); g.moveTo(u * 0.385, H * 0.028 + u * 0.037); g.lineTo(u * 0.385, H * 0.028 + u * 0.063); g.stroke();
+  // second row: weekly rank, the goal
+  setType(g, TYPE, 'text', u * 0.026, { weight: 600 });
+  hap(g, u * 0.025, H * 0.028 + u * 0.115, u * 0.24, u * 0.052, 0.3); g.fillStyle = '#9fe7ff'; g.beginPath(); g.moveTo(u * 0.05, H * 0.028 + u * 0.128); g.lineTo(u * 0.062, H * 0.028 + u * 0.141); g.lineTo(u * 0.05, H * 0.028 + u * 0.154); g.lineTo(u * 0.038, H * 0.028 + u * 0.141); g.closePath(); g.fill();
+  g.fillStyle = '#fff'; g.fillText('Haftalık 40.', u * 0.075, H * 0.028 + u * 0.15);
+  hap(g, u * 0.28, H * 0.028 + u * 0.115, u * 0.13, u * 0.052, 0.3); ikon(g, 'yildiz', u * 0.305, H * 0.028 + u * 0.141, u * 0.013); g.fillStyle = '#fff'; g.fillText(`${t > 11.5 ? 2 : 1}/9`, u * 0.33, H * 0.028 + u * 0.15);
+  // top right: viewers
+  const izl = Math.round(824 + 18 * Math.sin(t * 0.4) + 3 * Math.sin(t * 2.1) + t * 1.5);
+  for (const [i, ad] of ['nil', 'ats', 'mira'].entries()) avatar(g, u * (0.6 + i * 0.05), H * 0.028 + u * 0.05, u * 0.026, ad);
+  hap(g, u * 0.75, H * 0.028 + u * 0.022, u * 0.16, u * 0.056); setType(g, TYPE, 'text', u * 0.03, { weight: 600 }); g.fillStyle = '#fff'; g.textAlign = 'center'; g.fillText(String(izl), u * 0.83, H * 0.028 + u * 0.061);
+  g.strokeStyle = '#fff'; g.lineWidth = u * 0.005; g.beginPath(); g.moveTo(u * 0.935, H * 0.028 + u * 0.032); g.lineTo(u * 0.965, H * 0.028 + u * 0.062); g.moveTo(u * 0.965, H * 0.028 + u * 0.032); g.lineTo(u * 0.935, H * 0.028 + u * 0.062); g.stroke();
+  // right: the gift panel, a row pulses and counts up when its gift arrives
+  PANEL.forEach(([ad, n0, ik2], i) => {
+    const hd = HEDIYE.filter((h) => h[2] === ad), son = hd.filter((h) => t >= h[0]), artis = son.reduce((a, h) => a + h[3], 0), yeni = son.length ? t - son[son.length - 1][0] : 9;
+    const nab = yeni < 0.6 ? 1 + 0.07 * Math.sin(Math.PI * yeni / 0.6) : 1, x = u * 0.7, y = H * 0.115 + i * u * 0.125, w = u * 0.275, h = u * 0.105;
+    g.save(); g.translate(x + w / 2, y + h / 2); g.scale(nab, nab); g.translate(-(x + w / 2), -(y + h / 2));
+    g.fillStyle = yeni < 0.8 ? `rgba(254,44,85,${0.45 * (1 - yeni / 0.8)})` : 'rgba(0,0,0,0)'; g.beginPath(); g.roundRect(x - u * 0.006, y - u * 0.006, w + u * 0.012, h + u * 0.012, u * 0.03); g.fill();
+    hap(g, x, y, w, h, 0.45); g.beginPath(); g.roundRect(x, y, w, h, u * 0.025); g.fillStyle = 'rgba(0,0,0,0.0)'; g.fill();
+    ikon(g, ik2, x + u * 0.05, y + h / 2, u * 0.028);
+    g.textAlign = 'left'; setType(g, TYPE, 'text', u * 0.029, { weight: 600 }); g.fillStyle = '#fff'; g.fillText(ad, x + u * 0.095, y + h * (n0 == null ? 0.6 : 0.45));
+    if (n0 != null) { setType(g, TYPE, 'text', u * 0.027); g.fillStyle = 'rgba(255,255,255,0.85)'; g.fillText(String(n0 + artis), x + u * 0.095, y + h * 0.8); }
+    g.restore();
+  });
+  // a gift arriving: a banner slides in at the left
+  for (const [t0, kim, ad, n] of HEDIYE) {
+    const a = t - t0; if (a < 0 || a > 2.4) continue;
+    const gir = EASE.out(clamp(a / 0.35)) - EASE.inOut(clamp((a - 2.0) / 0.4)), x = lerp(-u * 0.6, u * 0.025, gir), y = H * 0.44, w = u * 0.55, h = u * 0.1;
+    const bg = g.createLinearGradient(x, 0, x + w, 0); bg.addColorStop(0, 'rgba(120,20,60,0.85)'); bg.addColorStop(0.7, 'rgba(40,10,30,0.7)'); bg.addColorStop(1, 'rgba(20,10,20,0.35)'); g.fillStyle = bg; g.beginPath(); g.roundRect(x, y, w, h, h / 2); g.fill();
+    avatar(g, x + h / 2, y + h / 2, h * 0.38, kim);
+    g.textAlign = 'left'; setType(g, TYPE, 'text', u * 0.029, { weight: 600 }); g.fillStyle = '#fff'; g.fillText(kim, x + h * 1.05, y + h * 0.43);
+    setType(g, TYPE, 'text', u * 0.026); g.fillText(`${ad} gönderdi`, x + h * 1.05, y + h * 0.78);
+    const ik3 = PANEL.find((p) => p[0] === ad)[2]; ikon(g, ik3, x + w * 0.78, y + h / 2, u * 0.03);
+    setType(g, TYPE, 'text', u * 0.05, { weight: 600 }); g.fillStyle = '#ffd34d'; g.fillText(`×${n}`, x + w * 0.85, y + h * 0.7);
+  }
+  // bottom left: the pinned line and the comments flowing up
+  const sx = u * 0.03, satir = u * 0.072;
+  hap(g, sx, H * 0.6, u * 0.46, u * 0.065, 0.42); setType(g, TYPE, 'text', u * 0.024, { weight: 600 }); g.fillStyle = '#ffd86b'; g.textAlign = 'left'; g.fillText('Sabitlendi', sx + u * 0.025, H * 0.6 + u * 0.042);
+  setType(g, TYPE, 'text', u * 0.029, { weight: 600 }); g.fillStyle = '#fff'; g.fillText('111 su koruma', sx + u * 0.17, H * 0.6 + u * 0.043);
+  const gorunen = YORUM.filter((c) => c[0] <= t).slice(-6);
+  gorunen.forEach((c, i) => {
+    const kac = gorunen.length - 1 - i, yas = t - c[0], giris = EASE.out(clamp(yas / 0.25)), y = H * 0.875 - kac * satir - (1 - giris) * -satir * 0.5;
+    const a = (kac === 5 ? 0.5 : 1) * giris; g.globalAlpha = a;
+    setType(g, TYPE, 'text', u * 0.027, { weight: 600 }); const w1 = g.measureText(c[1]).width; setType(g, TYPE, 'text', u * 0.029); const w2 = g.measureText(c[2]).width;
+    g.textAlign = 'left'; hap(g, sx, y - u * 0.045, w1 + w2 + u * 0.105, u * 0.062, 0.32); avatar(g, sx + u * 0.03, y - u * 0.014, u * 0.02, c[1]);
+    setType(g, TYPE, 'text', u * 0.027, { weight: 600 }); g.fillStyle = 'rgba(255,255,255,0.72)'; g.fillText(c[1], sx + u * 0.06, y);
+    setType(g, TYPE, 'text', u * 0.029); g.fillStyle = c[3] === 'katil' ? 'rgba(255,255,255,0.72)' : '#fff'; g.fillText(c[3] === 'katil' ? 'katıldı' : c[2], sx + u * 0.075 + w1, y);
+    g.globalAlpha = 1;
+  });
+  // bottom: the comment box, the gift and share buttons
+  g.textAlign = 'left'; hap(g, sx, H * 0.925, u * 0.6, u * 0.085, 0.35); setType(g, TYPE, 'text', u * 0.03); g.fillStyle = 'rgba(255,255,255,0.7)'; g.fillText('Yorum yap...', sx + u * 0.04, H * 0.925 + u * 0.054);
+  g.fillStyle = '#fe2c55'; g.beginPath(); g.roundRect(u * 0.7, H * 0.925 + u * 0.012, u * 0.07, u * 0.06, u * 0.012); g.fill(); g.fillStyle = '#fff'; g.fillRect(u * 0.731, H * 0.925 + u * 0.012, u * 0.008, u * 0.06); g.fillRect(u * 0.7, H * 0.925 + u * 0.03, u * 0.07, u * 0.008);
+  g.strokeStyle = '#fff'; g.lineWidth = u * 0.006; g.beginPath(); g.moveTo(u * 0.84, H * 0.925 + u * 0.06); g.quadraticCurveTo(u * 0.85, H * 0.925 + u * 0.025, u * 0.9, H * 0.925 + u * 0.022); g.stroke();
+  g.fillStyle = '#fff'; g.beginPath(); g.moveTo(u * 0.9, H * 0.925 + u * 0.005); g.lineTo(u * 0.93, H * 0.925 + u * 0.024); g.lineTo(u * 0.9, H * 0.925 + u * 0.043); g.fill();
+  // hearts rising at the right edge, a burst after each gift
+  const r = rng(131);
+  for (let i = 0; i < 60; i++) {
+    let t0 = r() * DURATION; const burst = HEDIYE[i % HEDIYE.length][0]; if (i % 3 === 0) t0 = burst + r() * 0.8;
+    const a = t - t0; if (a < 0 || a > 2.2) continue;
+    const x = u * (0.9 + 0.04 * Math.sin(a * 3 + i)), y = H * (0.9 - a * 0.13), s = u * (0.018 + 0.012 * r()) * (1 + 0.3 * clamp(a * 4));
+    g.globalAlpha = clamp((2.2 - a) / 0.6); g.fillStyle = ['#fe2c55', '#ff6b9a', '#c58cff', '#ff4d6d'][i % 4]; kalp(g, x, y, s); g.fill(); g.globalAlpha = 1;
+  }
+  g.restore();
+}
+
+
+// Capture contract: every frame is drawn directly from its index, never from previous state.
+window.READY = document.fonts.ready.then(() => ({ width: W, height: H, fps: FPS, frames: FPS * DURATION }));
+window.renderFrame = frame => {
+  const t = clamp(frame, 0, FPS * DURATION - 1) / FPS;
+  g.reset();
+  sYayin(g, t / DURATION, t, S);
+  ARAYUZ(g, S, t);
+};
+window.renderFrame(0);
+// Preview only. Render uses capture=1 and its own fixed clock.
+if (!new URLSearchParams(location.search).has('capture')) {
+  let frame = 0, playing = false, origin = 0;
+  const hud = document.getElementById('hud');
+  function toggle() { playing = !playing; origin = performance.now() - frame * 1000 / FPS; }
+  addEventListener('click', toggle);
+  addEventListener('keydown', e => {
+    if (e.code === 'Space') { e.preventDefault(); toggle(); }
+    if (e.code === 'ArrowRight' || e.code === 'ArrowLeft') {
+      e.preventDefault(); playing = false;
+      frame = clamp(frame + (e.code === 'ArrowRight' ? 1 : -1), 0, FPS * DURATION - 1);
+    }
+  });
+  function tick(now) {
+    if (playing) frame = Math.floor((now - origin) * FPS / 1000) % (FPS * DURATION);
+    window.renderFrame(frame);
+    hud.textContent = `Sessiz örnek, ${(frame / FPS).toFixed(2)} sn. Tıklayın: oynat / durdur. Oklar: bir kare.`;
+    requestAnimationFrame(tick);
+  }
+  window.READY.then(() => requestAnimationFrame(tick));
+}
+</script>
+</html>

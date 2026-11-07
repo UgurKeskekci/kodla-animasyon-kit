@@ -1,0 +1,13 @@
+node_modules/
+renders/
+calisma/
+*.mp4
+*.wav
+*.aiff
+*.aif
+__pycache__/
+.DS_Store
+.env
+.env.*
+!.env.example
+*.log
